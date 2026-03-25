@@ -1,0 +1,100 @@
+D:\001\Angle one\trading_dashboard\utils\backtest.py:34: UserWarning: Parsing dates in %d-%m-%Y %H:%M format when dayfirst=False (the default) was specified. Pass `dayfirst=True` or specify a format to silence this warning.
+  df[col] = pd.to_datetime(df[col], errors="coerce")
+======================================================================
+  MASTER COMPARISON — Reference vs Dashboard Backtest Engines
+======================================================================
+
+📂 Data: utils\test\SILVERM_2year_15_MIN.csv
+   Rows: 45,240  |  Columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+
+======================================================================
+🔵 ENGINE 1: Bro_gaurd_SILVERMINI.py (REFERENCE)
+======================================================================
+🚀 Loading data ...
+✅ Rows in file: 45240 | Parsed bars used: 45240
+🕒 Range → 2022-11-16 13:00:00  to  2025-12-30 13:00:00
+▶️ Starting backtest ...
+✅ Backtest complete.
+
+📊 Reference Results:
+   Trades closed : 208
+   Events logged : 416
+   Wins          : 83
+   Losses        : 125
+   Net P&L       : ₹26,487,040.66
+   Ending Cash   : ₹28,987,040.66
+
+======================================================================
+🟢 ENGINE 2: utils/backtest.py (PROJECT)
+======================================================================
+
+📊 Project Results:
+   Trades closed : 208
+   Events logged : 416
+   Wins          : 83
+   Losses        : 125
+   Net P&L       : ₹26,487,040.66
+   Ending Cash   : ₹28,987,040.66
+
+======================================================================
+🟠 ENGINE 3: backtest_runner/backtest_engine.py (RUNNER)
+======================================================================
+
+❌ Runner engine failed to execute: ['datetime']
+
+======================================================================
+🔍 SIDE-BY-SIDE COMPARISON
+======================================================================
+
+   METRIC                         |              REFERENCE |                  PROJECT |                   RUNNER
+   --------------------------------------------------------------------------------------------------------------
+     Trade Count                  | REF:                208 | PROJ: ✅                208 | RUNNER: ⚠️                N/A
+     Event Count                  | REF:                416 | PROJ: ✅                416 | RUNNER: ⚠️                N/A
+     Wins                         | REF:                 83 | PROJ: ✅                 83 | RUNNER: ⚠️                N/A
+     Losses                       | REF:                125 | PROJ: ✅                125 | RUNNER: ⚠️                N/A
+     Net P&L                      | REF:     ₹26,487,040.66 | PROJ: ✅     ₹26,487,040.66 | RUNNER: ⚠️                N/A
+     Ending Cash                  | REF:     ₹28,987,040.66 | PROJ: ✅     ₹28,987,040.66 | RUNNER: ⚠️                N/A
+     Win Rate %                   | REF:            39.9038 | PROJ: ✅            39.9038 | RUNNER: ⚠️                N/A
+
+======================================================================
+📋 TRADE-BY-TRADE: Reference vs Project (utils/backtest.py)
+======================================================================
+
+   ✅ ALL 208 trades match perfectly!
+
+   📋 Sample trades (first 5):
+      ✅ T1: ref_pnl=₹-12,033.54 proj_pnl=₹-12,033.54 |  LONG | 2022-11-17 09:00:00
+      ✅ T2: ref_pnl=₹-6,514.92 proj_pnl=₹-6,514.92 | SHORT | 2022-11-23 12:15:00
+      ✅ T3: ref_pnl=₹4,082.40 proj_pnl=₹4,082.40 |  LONG | 2022-11-25 17:15:00
+      ✅ T4: ref_pnl=₹-39,130.25 proj_pnl=₹-39,130.25 | SHORT | 2022-11-29 23:45:00
+      ✅ T5: ref_pnl=₹27,475.49 proj_pnl=₹27,475.49 |  LONG | 2022-12-05 20:30:00
+
+   📋 Sample trades (last 5):
+      ✅ T204: ref_pnl=₹-507,296.99 proj_pnl=₹-507,296.99 |  LONG | 2025-12-15 22:00:00
+      ✅ T205: ref_pnl=₹-808,075.77 proj_pnl=₹-808,075.77 | SHORT | 2025-12-16 19:00:00
+      ✅ T206: ref_pnl=₹-727,537.83 proj_pnl=₹-727,537.83 |  LONG | 2025-12-18 20:00:00
+      ✅ T207: ref_pnl=₹11,656,221.21 proj_pnl=₹11,656,221.21 |  LONG | 2025-12-29 11:30:00
+      ✅ T208: ref_pnl=₹-1,641,724.13 proj_pnl=₹-1,641,724.13 | SHORT | 2025-12-30 09:00:00
+
+======================================================================
+📊 EXIT REASON BREAKDOWN
+======================================================================
+
+   REASON               |    REF |   PROJ
+   -------------------------------------------------------
+   EMA_REVERSAL         |     63 | ✅   63
+   MONTH_END            |     25 | ✅   25
+   STOP                 |    120 | ✅  120
+
+======================================================================
+🏁 FINAL VERDICT
+======================================================================
+
+   ✅ REFERENCE vs utils/backtest.py     → IDENTICAL ✓
+      Every single trade P&L matches within ₹0.01 tolerance.
+
+   ⚠️ REFERENCE vs backtest_engine.py    → COULD NOT TEST
+
+======================================================================
+  COMPARISON COMPLETE
+======================================================================
