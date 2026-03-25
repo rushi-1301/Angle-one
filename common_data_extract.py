@@ -11,6 +11,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 import re
 import time
 import datetime as dt
+import os
+from decouple import config
 from typing import List, Dict, Optional, Tuple, Union
 
 import pyotp
@@ -19,12 +21,12 @@ from SmartApi.smartConnect import SmartConnect
 
 
 # ============================
-# 0) CREDENTIALS (yours)   "j93096"
+# 0) CREDENTIALS (from .env)
 # ============================
-CLIENT_CODE = "H63011733"
-PASSWORD    = "0852"
-TOTP_SECRET = "UDZGVH3RJFDK55WCWZ4DH667KI"   # base32 (A–Z, 2–7)
-API_KEY     = "dB0kYJIz"
+CLIENT_CODE = config("ANGEL_SMARTAPI_CLIENT_CODE", default="H63011733")
+PASSWORD    = config("ANGEL_SMARTAPI_PASSWORD",    default="0852")
+TOTP_SECRET = config("ANGEL_SMARTAPI_TOTP_SECRET", default="UDZGVH3RJFDK55WCWZ4DH667KI")
+API_KEY     = config("ANGEL_SMARTAPI_API_KEY",     default="dB0kYJIz")
 
 
 # ===========================================
