@@ -214,7 +214,8 @@ ALLOWED_HOSTS = [
     '.ngrok-free.app',
     '.ngrok-free.dev',
     'spineless-facetiously-jamal.ngrok-free.dev',
-    'q-investment.onrender.com'
+    'q-investment.onrender.com',
+    'angle-one-psjo.onrender.com'
 ]
 
 
@@ -223,4 +224,5 @@ CSRF_TRUSTED_ORIGINS = [
     'https://*.ngrok-free.dev',
     'https://*.ngrok-free.app',
     'https://*.ngrok.io',
+    'https://angle-one-psjo.onrender.com'
 ]
