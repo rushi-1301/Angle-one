@@ -266,6 +266,10 @@ def live_backtest(request):
             events_df.to_csv(events_path, index=False)
             trades_df.to_csv(trades_path, index=False)
             pnl_df.to_csv(pnl_path, index=False)
+            
+            # Save raw candles data
+            candles_path = os.path.join(out_dir, "candles.csv")
+            candles_df.to_csv(candles_path, index=False)
             chart_url = os.path.join(settings.MEDIA_URL, "live_outputs", f"user_{user.id}", "balance.png")
             # also save chart as file for compatibility (decode base64)
             chart_file_path = os.path.join(out_dir, "balance.png")
@@ -293,6 +297,7 @@ def live_backtest(request):
             "events_csv": settings.MEDIA_URL + f"live_outputs/user_{user.id}/events.csv",
             "trades_csv": settings.MEDIA_URL + f"live_outputs/user_{user.id}/trades.csv",
             "pnl_csv": settings.MEDIA_URL + f"live_outputs/user_{user.id}/pnl.csv",
+            "candles_csv": settings.MEDIA_URL + f"live_outputs/user_{user.id}/candles.csv",
         })
         return render(request, "dashboard/live_backtest.html", context)
 

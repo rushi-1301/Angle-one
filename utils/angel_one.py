@@ -155,16 +155,11 @@ def safe_json(response):
 
 def get_angelone_candles(jwt_token, api_key, exchange, symbol_token, interval, fromdate, todate):
     import pandas as pd
+    from datetime import datetime, timedelta
+    import time
 
     url = "https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData"
-    payload = {
-        "exchange": exchange,
-        "symboltoken": symbol_token,
-        "interval": interval,
-        "fromdate": fromdate,
-        "todate": todate
-    }
-
+    
     headers = {
         "X-PrivateKey": api_key,
         "X-UserType": "USER",
@@ -177,27 +172,76 @@ def get_angelone_candles(jwt_token, api_key, exchange, symbol_token, interval, f
         "Accept": "application/json",
     }
 
+    # Parse input dates
     try:
-        # response = requests.post(url, headers=headers, data=json.dumps(payload))
-        response = requests.post(url, json=payload, headers=headers)
-        data = response.json()
-    except Exception as e:
-        return None, f"Invalid JSON response: {e}"
+        from_dt = datetime.strptime(fromdate, "%Y-%m-%d %H:%M")
+        to_dt = datetime.strptime(todate, "%Y-%m-%d %H:%M")
+    except ValueError:
+        # fallback for date-only format
+        from_dt = datetime.strptime(fromdate, "%Y-%m-%d")
+        to_dt = datetime.strptime(todate, "%Y-%m-%d")
 
-    if not data.get("status"):
-        return None, data.get("message", "API failed.")
+    # Angel One has limits on historical data range per request (e.g. 30-100 days for 15min)
+    # We will fetch in 60-day chunks working BACKWARDS from to_dt
+    all_rows = []
+    chunk_days = 60 if interval != "ONE_DAY" else 365 * 2
+    current_to = to_dt
+    
+    print(f"DEBUG: Starting chunked fetch from {fromdate} to {todate}")
 
-    rows = data.get("data", [])
+    while current_to > from_dt:
+        current_from = max(from_dt, current_to - timedelta(days=chunk_days))
+        
+        payload = {
+            "exchange": exchange,
+            "symboltoken": symbol_token,
+            "interval": interval,
+            "fromdate": current_from.strftime("%Y-%m-%d %H:%M"),
+            "todate": current_to.strftime("%Y-%m-%d %H:%M")
+        }
 
-    if not rows:
-        return None, "No data available."
+        try:
+            print(f"DEBUG: Fetching chunk {payload['fromdate']} -> {payload['todate']}")
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
+            data = response.json()
+            
+            if not data.get("status"):
+                msg = data.get("message", "API failed.")
+                print(f"DEBUG: Chunk failed: {msg}")
+                # If we have some rows already, we return those instead of failing completely
+                if all_rows: break
+                return None, msg
+
+            rows = data.get("data", [])
+            if not rows:
+                print("DEBUG: Empty chunk returned.")
+                if all_rows: break
+                # break if no data at all
+                break
+            
+            all_rows.extend(rows)
+            # Move window back
+            current_to = current_from - timedelta(minutes=1)
+            # Sleep to avoid rate limiting
+            time.sleep(0.5)
+
+        except Exception as e:
+            print(f"DEBUG: Exception in chunk: {e}")
+            if all_rows: break
+            return None, f"Request error: {e}"
+
+    if not all_rows:
+        return None, "No data available for the given range."
 
     # Convert to DataFrame
-    df = pd.DataFrame(rows, columns=["datetime","open","high","low","close","volume"])
+    df = pd.DataFrame(all_rows, columns=["datetime","open","high","low","close","volume"])
+    # Convert to datetime and sort
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert("Asia/Kolkata")
     df.sort_values("datetime", inplace=True)
+    df.drop_duplicates(subset=["datetime"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
+    print(f"DEBUG: Total candles fetched: {len(df)}")
     return df, None
 
 
