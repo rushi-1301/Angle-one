@@ -93,6 +93,10 @@ def refresh(key):
         # Login session
         session = smart_api.generateSession(username, pwd, totp)
 
+        if session is None:
+            logger.error("SMARTAPI LOGIN returned None — credentials may be invalid or TOTP expired")
+            return key
+
         if "data" not in session:
             logger.error(f"SMARTAPI LOGIN FAILED: {session}")
             return key  # DO NOT BREAK SYSTEM
@@ -250,9 +254,9 @@ def get_rms_balance(user):
     Fetch RMS balance (net, available cash, M2M etc.)
     """
     if not user.api_key or not user.jwt_token:
-        return None, "API credentials missing"
+        return {"status": False, "message": "API credentials missing"}
 
-    api_key = user.api_key.api_key
+    api_key = user.api_key
     jwt_token = user.jwt_token
 
     url = "https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getRMS"
@@ -265,31 +269,29 @@ def get_rms_balance(user):
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
         "X-ClientPublicIP": "127.0.0.1",
-        "X-MACAddress": "00:00:00:00:00",
+        "X-MACAddress": "AA:BB:CC:DD:EE:FF",  # Unified MAC address
         "X-PrivateKey": api_key,
     }
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
 
-        # ❗ Always inspect raw text first
         try:
             data = response.json()
         except ValueError:
-            return None, f"Non-JSON response: {response.text}"
+            return {"status": False, "message": f"Non-JSON response: {response.text}"}
 
-        # ❗ Handle string response
         if isinstance(data, str):
-            return None, data
+            return {"status": False, "message": data}
 
-        # ❗ Normal success path
         if data.get("status") is True:
-            return data.get("data"), None
+            # Return dict matching view's expectation
+            return {"status": True, "data": data.get("data", {})}
 
-        return None, data.get("message", "Unknown RMS API error")
+        return {"status": False, "message": data.get("message", "Unknown RMS API error")}
 
     except requests.RequestException as e:
-        return None, str(e)
+        return {"status": False, "message": str(e)}
 
 
 def get_daily_pnl(user):
@@ -371,12 +373,12 @@ def get_account_balance(api_key, jwt_token):
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {jwt_token.replace('Bearer ', '').strip()}",  # JWT token
-        "X-PrivateKey": "GV3q6BeG",  # Your API key
+        "X-PrivateKey": api_key,  # FIXED: Use dynamic api_key
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientPublicIP": "127.0.0.1",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-MACAddress": "AA-BB-CC-11-22-33",  # Any MAC string
+        "X-MACAddress": "AA:BB:CC:DD:EE:FF",  # Unified MAC address
     }
 
     try:
@@ -461,11 +463,51 @@ def login_and_get_tokens(angel_key, max_attempts=4, delay=15):
     logger.error("All login attempts failed")
     return None
 
-def get_margin_required(api_key, jwt_token, exchange, tradingsymbol, symboltoken, transaction_type, quantity=1,
-                        product_type="INTRADAY", order_type="MARKET"):
+# ─── Product type normalization ────────────────────────────────────────────────
+# Angel One Margin API expects: INTRADAY, DELIVERY, CARRYFORWARD, etc.
+# Our system uses short codes: INT → INTRADAY, CF → CARRYFORWARD
+_PRODUCT_TYPE_MAP = {
+    "INT":          "INTRADAY",
+    "INTRADAY":     "INTRADAY",
+    "CF":           "CARRYFORWARD",
+    "CARRYFORWARD": "CARRYFORWARD",
+    "DELIVERY":     "DELIVERY",
+    "BO":           "BO",
+    "CO":           "CO",
+}
+
+
+def get_margin_required(
+    api_key,
+    jwt_token,
+    exchange,
+    tradingsymbol,
+    symboltoken,
+    transaction_type,
+    quantity=1,
+    price=0,           # ← Pass live LTP / order price (0 = market best estimate)
+    product_type="INTRADAY",
+    order_type="MARKET",
+):
     """
-    Fetch required margin for a single lot from Angel One's margin API.
+    Fetch required margin for the given order from Angel One's Margin API.
+
+    Parameters
+    ----------
+    price        : float  — LTP or limit price. Use 0 for a MARKET order estimate.
+    product_type : str    — Accepts both short codes (INT, CF) and full names
+                           (INTRADAY, CARRYFORWARD, DELIVERY).
+    transaction_type : str — BUY or SELL
+
+    Returns
+    -------
+    float — Total margin required (in ₹). Returns 0 on any failure.
     """
+    # Normalize product type
+    normalised_product = _PRODUCT_TYPE_MAP.get(
+        str(product_type).upper(), "INTRADAY"
+    )
+
     url = "https://apiconnect.angelone.in/rest/secure/angelbroking/margin/v1/batch"
     clean_jwt = jwt_token.replace("Bearer ", "").strip()
     headers = {
@@ -483,31 +525,139 @@ def get_margin_required(api_key, jwt_token, exchange, tradingsymbol, symboltoken
     payload = {
         "positions": [
             {
-                "exchange": exchange,
-                "qty": quantity,
-                "price": 0,
-                "productType": product_type,
-                "orderType": order_type,
-                "token": symboltoken,
-                "tradeType": transaction_type
+                "exchange": exchange.upper(),
+                "qty": int(quantity),
+                "price": float(price),          # ← live price, not hardcoded 0
+                "productType": normalised_product,
+                "orderType": order_type.upper(),
+                "token": str(symboltoken),
+                "tradeType": transaction_type.upper(),
             }
         ]
     }
 
+    logger.info(
+        "[MARGIN API] exchange=%s token=%s qty=%s price=%s product=%s side=%s",
+        exchange, symboltoken, quantity, price, normalised_product, transaction_type
+    )
+
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
 
         if data.get("status") and data.get("data"):
             margin_data = data["data"]
             if isinstance(margin_data, list) and len(margin_data) > 0:
-                return margin_data[0].get("totalMarginRequired", 0)
+                required = float(margin_data[0].get("totalMarginRequired", 0))
             elif isinstance(margin_data, dict):
-                return margin_data.get("totalMarginRequired", 0)
+                required = float(margin_data.get("totalMarginRequired", 0))
+            else:
+                required = 0.0
 
-        logger.error("Margin API failed: %s", data)
-        return 0
+            logger.info("[MARGIN API] Required margin = ₹%.2f", required)
+            return required
+
+        logger.error("[MARGIN API] Failed response: %s", data)
+        return 0.0
 
     except Exception as e:
-        logger.exception("Margin API request failed: %s", e)
-        return 0
+        logger.exception("[MARGIN API] Request failed: %s", e)
+        return 0.0
+
+
+def fetch_margin_and_balance(
+    api_key,
+    jwt_token,
+    exchange,
+    tradingsymbol,
+    symboltoken,
+    transaction_type,
+    quantity,               # total qty (lots × lot_size)
+    price=0,               # live LTP or order price
+    product_type="INTRADAY",
+    order_type="MARKET",
+):
+    """
+    Fetches BOTH available balance (from RMS) AND required margin (from Margin API)
+    in a single call. Compares them and returns a structured result.
+
+    Returns
+    -------
+    dict:
+        {
+            "available_cash"   : float,   # broker available funds
+            "used_margin"      : float,   # already-used margin
+            "net_balance"      : float,   # net account balance
+            "required_margin"  : float,   # margin required for this order
+            "sufficient"       : bool,    # True if available_cash >= required_margin
+            "shortfall"        : float,   # available_cash - required_margin (negative = blocked)
+            "error"            : str,     # populated if any API call failed
+        }
+    """
+    result = {
+        "available_cash":  0.0,
+        "used_margin":     0.0,
+        "net_balance":     0.0,
+        "required_margin": 0.0,
+        "sufficient":      False,
+        "shortfall":       0.0,
+        "error":           None,
+    }
+
+    # ── Step 1: Fetch available balance from RMS ──────────────────────────────
+    try:
+        balance = get_account_balance(api_key, jwt_token)
+        result["available_cash"] = balance.get("available_cash", 0.0)
+        result["used_margin"]    = balance.get("used_margin", 0.0)
+        result["net_balance"]    = balance.get("net_balance", 0.0)
+
+        logger.info(
+            "[MARGIN CHECK] Available cash = ₹%.2f | Used margin = ₹%.2f",
+            result["available_cash"], result["used_margin"]
+        )
+    except Exception as e:
+        result["error"] = f"Balance fetch error: {e}"
+        logger.error("[MARGIN CHECK] Balance fetch failed: %s", e)
+        return result
+
+    # ── Step 2: Fetch required margin from Margin API ─────────────────────────
+    try:
+        required = get_margin_required(
+            api_key=api_key,
+            jwt_token=jwt_token,
+            exchange=exchange,
+            tradingsymbol=tradingsymbol,
+            symboltoken=symboltoken,
+            transaction_type=transaction_type,
+            quantity=int(quantity),
+            price=float(price),
+            product_type=product_type,
+            order_type=order_type,
+        )
+        result["required_margin"] = required
+
+        logger.info(
+            "[MARGIN CHECK] Required margin = ₹%.2f", required
+        )
+    except Exception as e:
+        result["error"] = f"Margin API error: {e}"
+        logger.error("[MARGIN CHECK] Margin fetch failed: %s", e)
+        return result
+
+    # ── Step 3: Compare available vs required ────────────────────────────────
+    shortfall = result["available_cash"] - result["required_margin"]
+    result["shortfall"] = shortfall
+    result["sufficient"] = shortfall >= 0
+
+    if result["sufficient"]:
+        logger.info(
+            "[MARGIN CHECK] ✅ SUFFICIENT | Available ₹%.2f ≥ Required ₹%.2f (surplus ₹%.2f)",
+            result["available_cash"], result["required_margin"], shortfall
+        )
+    else:
+        logger.warning(
+            "[MARGIN CHECK] ❌ INSUFFICIENT | Available ₹%.2f < Required ₹%.2f (shortfall ₹%.2f) — ORDER BLOCKED",
+            result["available_cash"], result["required_margin"], abs(shortfall)
+        )
+
+    return result

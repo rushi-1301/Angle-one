@@ -19,7 +19,7 @@ from backtest_runner.models import AngelOneKey
 from live_trading.models import LiveTick, LiveCandle
 from portal import settings
 from utils.placeorder import buy_order, sell_order
-from utils.angel_one import get_account_balance, login_and_get_tokens, get_margin_required
+from utils.angel_one import get_account_balance, login_and_get_tokens, get_margin_required, fetch_margin_and_balance
 from utils.indicator_preprocessor import add_indicators
 from utils.strategies_live import c3_strategy, EMA_LONG
 from utils.position_manager import PositionManager
@@ -100,7 +100,12 @@ class UserEngine:
         self.cached_balance = {}
 
         # Position manager
-        self.position_manager = PositionManager(user_id, self.token)
+        self.position_manager = PositionManager(
+            user_id=user_id,
+            token=self.token,
+            exchange=self.exchange,
+            tradingsymbol=self.trading_symbol
+        )
 
         # self.candles = []
         self.is_warmed_up = False
@@ -149,6 +154,12 @@ class UserEngine:
             self.jwt_token = tokens["jwt_token"]
             self.feed_token = tokens["feed_token"]
             self.last_login_time = time.time()
+
+            # Sync to position manager
+            if hasattr(self, "position_manager"):
+                self.position_manager.api_key = self.api_key
+                self.position_manager.jwt_token = self.jwt_token
+                self.position_manager.client_code = self.client_code
 
             logger.info(
                 "ENGINE AUTH READY | user=%s | client=%s",
@@ -399,9 +410,9 @@ def get_live_balance(engine):
         return cached
 
     balance = get_account_balance(engine.api_key, engine.jwt_token)
-    balance = {"available_cash": 2500000}
-    if not isinstance(balance, dict):
-        logging.error(f"Balance fetch failed: {balance}")
+    if not isinstance(balance, dict) or not balance.get("available_cash"):
+        logger.error(f"Balance fetch failed or returned 0: {balance}")
+        # fallback to a safe minimum or return
         return None
 
     cache.set(key, balance, timeout=3)
@@ -509,38 +520,106 @@ def run_strategy_live(engine, df, next_open=None):
 
     try:
         # ======================================================
-        # 7️⃣ PLACE ORDER ON **NEXT CANDLE OPEN**
+        # 7️⃣ MARGIN CHECK — Fetch live balance + required margin
+        #    Before placing any order, we ALWAYS call the broker API
+        #    with the actual symbol, quantity, LTP and product type.
+        #    If available cash < required margin → order is BLOCKED.
         # ======================================================
         logger.info("order placing")
         next_entry_price = next_open if next_open is not None else last["close"]
 
-        balance = get_live_balance(engine)
-        available_cash = balance.get("available_cash", 0)
+        # Resolve product type from strategy config (INT / CF / INTRADAY / CARRYFORWARD)
+        from backtest_runner.models import Strategy
+        try:
+            strat = Strategy.objects.get(id=engine.strategy_id)
+            product_type = getattr(strat, "product_type", "INTRADAY") or "INTRADAY"
+        except Exception:
+            product_type = "INTRADAY"
 
-        if available_cash <= 1000:
-            logger.warning("Insufficient balance")
+        # Temporarily calculate lots to know total qty for margin check
+        # Use a quick preliminary balance fetch to size lots, then confirm with combined check
+        balance_preview = get_account_balance(engine.api_key, engine.jwt_token)
+        preview_cash = balance_preview.get("available_cash", 0) if balance_preview else 0
+
+        if preview_cash <= 1000:
+            logger.warning(
+                "[MARGIN CHECK] Insufficient preview balance (₹%.2f) — aborting before margin API call",
+                preview_cash
+            )
             return
 
+        # Determine margin per lot using LTP so calculation is accurate
         margin_per_lot = get_margin_required(
             api_key=engine.api_key,
             jwt_token=engine.jwt_token,
             exchange=engine.exchange,
             tradingsymbol=engine.trading_symbol,
             symboltoken=engine.token,
-            transaction_type=action
+            transaction_type=action,
+            quantity=pm.lot_size,          # 1 lot in qty units
+            price=next_entry_price,        # ← live LTP, not hardcoded 0
+            product_type=product_type,     # ← dynamic from strategy
         )
 
         if margin_per_lot <= 0:
-            logger.error("Invalid margin received")
+            logger.error(
+                "[MARGIN CHECK] Margin API returned 0 or invalid value — cannot size lots. Aborting."
+            )
             return
 
-        lots = pm.calculate_lots(available_cash - 1000, margin_per_lot)
-        qty = lots * pm.lot_size
+        lots = pm.calculate_lots(preview_cash - 1000, margin_per_lot)
+        qty  = lots * pm.lot_size
 
         if qty <= 0:
-            logger.warning("Invalid qty calculated")
+            logger.warning("[MARGIN CHECK] Invalid qty calculated (%s) — aborting", qty)
             return
 
+        # ───────────────────────────────────────────────────────────
+        # FINAL PRE-ORDER MARGIN CHECK (full qty, live data)            
+        # Calls BOTH RMS balance + Margin API fresh — no caching.       
+        # Order is BLOCKED if available_cash < required_margin.         
+        # ───────────────────────────────────────────────────────────
+        margin_check = fetch_margin_and_balance(
+            api_key=engine.api_key,
+            jwt_token=engine.jwt_token,
+            exchange=engine.exchange,
+            tradingsymbol=engine.trading_symbol,
+            symboltoken=engine.token,
+            transaction_type=action,
+            quantity=qty,                  # full qty for this order
+            price=next_entry_price,        # live LTP
+            product_type=product_type,     # INT / CF from strategy
+        )
+
+        if margin_check.get("error"):
+            logger.error(
+                "[ORDER BLOCK] Margin/balance API error: %s — order NOT placed",
+                margin_check["error"]
+            )
+            return
+
+        if not margin_check["sufficient"]:
+            logger.warning(
+                "[ORDER BLOCK] ❌ INSUFFICIENT MARGIN — "
+                "Available: ₹%.2f | Required: ₹%.2f | Shortfall: ₹%.2f | "
+                "Symbol: %s | Qty: %s | Side: %s | ProductType: %s",
+                margin_check["available_cash"],
+                margin_check["required_margin"],
+                abs(margin_check["shortfall"]),
+                engine.trading_symbol, qty, action, product_type
+            )
+            return
+
+        logger.info(
+            "[ORDER PROCEED] ✅ Margin OK — Available: ₹%.2f | Required: ₹%.2f | "
+            "Surplus: ₹%.2f | Qty: %s | Side: %s",
+            margin_check["available_cash"],
+            margin_check["required_margin"],
+            margin_check["shortfall"],
+            qty, action
+        )
+
+        # ── Place the order ────────────────────────────────────
         response = None
         if action == "BUY":
             response = buy_order(

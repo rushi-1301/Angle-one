@@ -17,7 +17,7 @@
   <form method="POST">
     {% csrf_token %}
     {{ form.as_p }}
-    <button class="btn btn-success btn-lg mt-3 px-5 fw-bold">Fetch & Run Backtest</button>
+    <button type="submit" class="btn btn-info btn-lg mt-3 px-5 fw-bold text-white" style="background-color: #00cdf9; border: none;">Fetch & Run Backtest</button>
   </form>
 </div>
 
@@ -42,7 +42,7 @@
           <h5 class="mb-3 fw-bold text-dark">Trading Events</h5>
         </div>
         <div>
-          <a href="{{ events_csv }}" download class="btn btn-success w-100 py-2">
+          <a href="{{ events_csv }}" download class="btn btn-info w-100 py-2 text-white" style="background-color: #00cdf9; border: none;">
             <i class="fas fa-download me-2"></i>Download Events CSV
           </a>
         </div>
@@ -59,7 +59,7 @@
           <h5 class="mb-3 fw-bold text-dark">Individual Trades</h5>
         </div>
         <div>
-          <a href="{{ trades_csv }}" download class="btn btn-success w-100 py-2">
+          <a href="{{ trades_csv }}" download class="btn btn-info w-100 py-2 text-white" style="background-color: #00cdf9; border: none;">
             <i class="fas fa-download me-2"></i>Download Trades CSV
           </a>
         </div>
@@ -76,7 +76,7 @@
           <h5 class="mb-3 fw-bold text-dark">P&L Report</h5>
         </div>
         <div>
-          <a href="{{ pnl_csv }}" download class="btn btn-success w-100 py-2">
+          <a href="{{ pnl_csv }}" download class="btn btn-info w-100 py-2 text-white" style="background-color: #00cdf9; border: none;">
             <i class="fas fa-download me-2"></i>Download PnL CSV
           </a>
         </div>
@@ -93,7 +93,7 @@
           <h5 class="mb-3 fw-bold text-dark">Candle Data</h5>
         </div>
         <div>
-          <a href="{{ candles_csv }}" download class="btn btn-success w-100 py-2">
+          <a href="{{ candles_csv }}" download class="btn btn-info w-100 py-2 text-white" style="background-color: #00cdf9; border: none;">
             <i class="fas fa-table me-2"></i>Download Candles CSV
           </a>
         </div>

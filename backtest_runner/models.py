@@ -6,6 +6,12 @@ class Strategy(models.Model):
     """
     Stores strategy configuration parameters for different instruments.
     """
+    PRODUCT_CHOICES = [
+        ("INTRADAY",     "Intraday (INT)"),
+        ("CARRYFORWARD", "Carry Forward (CF)"),
+        ("DELIVERY",     "Delivery"),
+    ]
+
     name = models.CharField(max_length=50, unique=True)          # SILVERMINI, GOLDMINI, NIFTY, BANKNIFTY
     exchange = models.CharField(max_length=10)                   # MCX, NSE
     symbol = models.CharField(max_length=20)                     # SILVERM, GOLDM, NIFTY, BANKNIFTY
@@ -17,6 +23,12 @@ class Strategy(models.Model):
     trail_sl_pct = models.FloatField()
     breakout_buffer = models.FloatField()
     margin_factor = models.FloatField(default=0.15)             # percentage of capital per lot
+    product_type = models.CharField(
+        max_length=20,
+        choices=PRODUCT_CHOICES,
+        default="INTRADAY",
+        help_text="INT = Intraday, CF = Carry Forward. Used for live margin calculation."
+    )
 
     def __str__(self):
         return self.name

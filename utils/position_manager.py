@@ -17,9 +17,14 @@ DAILY_TRADE_CAP = 10          # max entries per calendar day
 
 
 class PositionManager:
-    def __init__(self, user, token):
-        self.user = user
+    def __init__(self, user_id, token, api_key=None, jwt_token=None, client_code=None, exchange="MCX", tradingsymbol="SILVERM"):
+        self.user_id = user_id
         self.token = token
+        self.api_key = api_key
+        self.jwt_token = jwt_token
+        self.client_code = client_code
+        self.exchange = exchange
+        self.tradingsymbol = tradingsymbol
         self.position = None
 
         # ── Candle-based cooldown (matches reference) ─────────
@@ -193,16 +198,16 @@ class PositionManager:
 
         # Check fixed stop-loss
         if side == "LONG" and price <= self.position["fixed_sl"]:
-            self._close_position("STOP", price)
+            self._close_position("STOP", price, self.exchange, self.tradingsymbol)
             return
         if side == "SHORT" and price >= self.position["fixed_sl"]:
-            self._close_position("STOP", price)
+            self._close_position("STOP", price, self.exchange, self.tradingsymbol)
             return
 
         # Check trailing stop-loss
         if side == "LONG":
             if price <= self.position["trailing_sl"]:
-                self._close_position("STOP", price)
+                self._close_position("STOP", price, self.exchange, self.tradingsymbol)
                 return
             # Update trail upward (matches reference: c3 > pos_price → new trail)
             if price > self.position["entry_price"]:
@@ -212,7 +217,7 @@ class PositionManager:
 
         if side == "SHORT":
             if price >= self.position["trailing_sl"]:
-                self._close_position("STOP", price)
+                self._close_position("STOP", price, self.exchange, self.tradingsymbol)
                 return
             # Update trail downward
             if price < self.position["entry_price"]:
@@ -268,7 +273,7 @@ class PositionManager:
             logger.info(
                 "EMA_REVERSAL confirmed with opposite C3 → exiting %s", side
             )
-            self._close_position("EMA_REVERSAL", float(c3["close"]))
+            self._close_position("EMA_REVERSAL", float(c3["close"]), self.exchange, self.tradingsymbol)
             return True
 
         logger.info("EMA flipped but no opposite C3 confirm yet — holding %s", side)
@@ -277,10 +282,10 @@ class PositionManager:
     # ─── Force exit (month-end, EOD, etc.) ───────────────────
     def force_exit(self, reason, price):
         if self.position:
-            self._close_position(reason, price)
+            self._close_position(reason, price, self.exchange, self.tradingsymbol)
 
     # ─── Close position ──────────────────────────────────────
-    def _close_position(self, reason, price):
+    def _close_position(self, reason, price, exchange=None, tradingsymbol=None):
         if not self.position:
             return
 
@@ -288,16 +293,46 @@ class PositionManager:
         quantity = self.position["quantity"]
         logger.info("[POSITION CLOSE] %s | %s @ %s", side, reason, price)
 
-        if side == "LONG":
-            print("SELL ORDER")
-            # sell_order(self.user, self.token, quantity)
-        elif side == "SHORT":
-            print("BUY ORDER")
-            # buy_order(self.user, self.token, qty=quantity, exchange="MCX",
-            #           tradingsymbol="SILVERM30APR26FUT", symboltoken=457533)
+        # Use passed-in dynamic metadata or default to MCX/SILVERM for safety
+        ex = exchange or "MCX"
+        ts = tradingsymbol or "SILVERM"
 
-        pnl = get_pnl_from_angelone(self.user)
+        if side == "LONG":
+            logger.info("EXECUTING SELL ORDER | %s | Qty: %s", ts, quantity)
+            sell_order(
+                api_key=self.api_key,
+                jwt=self.jwt_token,
+                client_code=self.client_code,
+                exchange=ex,
+                tradingsymbol=ts,
+                token=self.token,
+                qty=quantity
+            )
+        elif side == "SHORT":
+            logger.info("EXECUTING BUY ORDER | %s | Qty: %s", ts, quantity)
+            buy_order(
+                api_key=self.api_key,
+                jwt=self.jwt_token,
+                client_code=self.client_code,
+                exchange=ex,
+                tradingsymbol=ts,
+                token=self.token,
+                qty=quantity
+            )
+
+        # Update P&L after trade
+        from utils.angel_one import get_rms_balance
+        pnl = 0  # fallback
+        try:
+            # We use use_rms logic since get_pnl_from_angelone might be specific
+            from backtest_runner.models import AngelOneKey
+            key_obj = AngelOneKey.objects.filter(user_id=self.user_id).first()
+            rms = get_rms_balance(key_obj)
+            if rms.get("status"):
+                pnl = float(rms.get("data", {}).get("m2mrealized", 0))
+        except Exception:
+            pass
         self.update_after_trade(pnl)
 
         self.position = None
-        self.cooldown_left = COOLDOWN_BARS  # 3-candle cooldown (matches reference)
+        self.cooldown_left = COOLDOWN_BARS

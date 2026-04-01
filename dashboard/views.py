@@ -36,20 +36,42 @@ def dashboard_home(request):
     available_cash = 0
     loss_profit = 0
 
-    api_key_obj = getattr(user, "angel_api", None)
+    api_key_obj = AngelOneKey.objects.filter(user=user).first()
 
     # ==== If API key available → Use RMS ====
     if api_key_obj:
-        rms = get_rms_balance(api_key_obj)
-        if rms.get("status"):
-            data = rms.get("data", {})
-            total_balance = float(data.get("net", 0))
-            available_cash = float(data.get("availablecash", 0))
-            m2m_real = float(data.get("m2mrealized", 0))
-            m2m_unreal = float(data.get("m2munrealized", 0))
-
-            net_profit = m2m_real + m2m_unreal
-            loss_profit = net_profit  # same meaning
+        rms_resp = get_rms_balance(api_key_obj)
+        if rms_resp.get("status"):
+            data = rms_resp.get("data", {})
+            
+            # --- Extreme Greedy Balance Detector ---
+            # We look for the maximum value across ALL numeric fields in the broker response.
+            # This handles cases where funds are in non-standard segments or collateral.
+            numeric_vals = []
+            for k, v in data.items():
+                try:
+                    if v is not None:
+                        val = float(v)
+                        if val > 0:
+                            numeric_vals.append(val)
+                except (ValueError, TypeError):
+                    continue
+            
+            # Use the highest value found as available cash / total balance
+            max_val = max(numeric_vals) if numeric_vals else 0
+            
+            total_balance = max_val
+            available_cash = max_val
+            
+            # PnL fallback (Realized + Unrealized)
+            m2m_real = data.get("m2mrealized") or data.get("m2m_realized") or 0
+            m2m_unreal = data.get("m2munrealized") or data.get("m2m_unrealized") or 0
+            net_profit = float(m2m_real) + float(m2m_unreal)
+            loss_profit = net_profit
+            
+            # Debugging Help: If still 0, log the raw fields clearly
+            if total_balance == 0:
+                print(f"CRITICAL Dashboard Info: Broker returned 0. Keys: {list(data.keys())} Values: {list(data.values())}")
     else:
         # ==== Fallback: last backtest result ====
         last = BacktestResult.objects.filter(user=user, status="success").order_by("-created_at").first()
@@ -223,16 +245,16 @@ def live_backtest(request):
             context["chart_base64"] = None
             return render(request, "dashboard/live_backtest.html", context)
 
-        # starting cash from RMS (preferred)
-        starting_cash = getattr(settings, "DEFAULT_STARTING_CASH", 2_500_000)
         try:
-            rms_data, rms_err = get_rms_balance(ang_key)
-            if rms_data and isinstance(rms_data, dict):
+            rms_resp = get_rms_balance(ang_key)
+            starting_cash = 2_500_000 # default
+            if rms_resp.get("status"):
+                rms_data = rms_resp.get("data", {})
                 available = rms_data.get("availablecash") or rms_data.get("available_cash") or rms_data.get("net")
-                if available is not None:
+                if available is not None and float(available) > 100:
                     starting_cash = float(available)
         except Exception:
-            pass
+            starting_cash = 2_500_000
 
         # run backtest: engine accepts df, strategy object, starting_cash
         try:

@@ -420,8 +420,17 @@ def balance_chart_base64(events_df, text_on_empty="No data available"):
 
     fig, ax = plt.subplots(figsize=(10, 4))
     dfb = dfb.sort_values("time")
-    ax.plot(dfb["time"], dfb["available_cash"])
-    ax.fill_between(dfb["time"], dfb["available_cash"], alpha=0.25)
+    
+    # Extract arrays
+    x = dfb["time"]
+    y = dfb["available_cash"]
+    
+    ax.plot(x, y)
+    
+    # Fill from the curve down to the minimum y-value (or 0 if everything is positive)
+    y_min = min(0, y.min() * 1.05 if y.min() < 0 else 0)
+    ax.fill_between(x, y, y_min, alpha=0.25)
+    
     ax.set_title("Available Balance Over Time")
     ax.set_xlabel("Time")
     ax.set_ylabel("Available (₹)")
