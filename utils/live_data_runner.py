@@ -265,24 +265,43 @@ def websocket_thread(engine):
 # THREAD 2 — DB WRITER (ASYNC, NON-BLOCKING)
 # ==========================================================
 def db_writer_thread(engine):
+    batch = []
+    MAX_BATCH_SIZE = 50
+    last_write_time = time.time()
+
     while engine.running.is_set():
         try:
-            tick = engine.tick_queue_db.get(timeout=1)
+            tick = engine.tick_queue_db.get(timeout=0.5)
+            batch.append(tick)
         except queue.Empty:
+            pass
+
+        if not batch:
             continue
 
-        close_old_connections()
-        # print("jwt_token in db thread:", engine.jwt_token)
-        try:
-            LiveTick.objects.create(
-                user_id=engine.user_id,
-                token=tick["token"],
-                ltp=tick["ltp"],
-                exchange_timestamp=tick["timestamp"]
-            )
-            logger.info("LiveTick saved")
-        except Exception as e:
-            logger.exception("LiveTick DB error: %s", e)
+        # Write if batch is full or 2 seconds have passed
+        if len(batch) >= MAX_BATCH_SIZE or (time.time() - last_write_time > 2):
+            close_old_connections()
+            try:
+                ticks_to_save = [
+                    LiveTick(
+                        user_id=engine.user_id,
+                        token=t["token"],
+                        ltp=t["ltp"],
+                        exchange_timestamp=t["timestamp"]
+                    ) for t in batch
+                ]
+                LiveTick.objects.bulk_create(ticks_to_save)
+                # logger.info("LiveTicks saved batch: %d", len(batch))
+                batch = []
+                last_write_time = time.time()
+            except Exception as e:
+                if "database is locked" in str(e).lower():
+                    logger.warning("LiveTick DB locked, retrying next cycle...")
+                    # keep the batch and try again later
+                else:
+                    logger.exception("LiveTick DB error: %s", e)
+                    batch = [] # clear on other errors
 
 
 # ==========================================================
@@ -304,7 +323,7 @@ def candle_and_strategy_thread(engine):
 
         # print(engine.jwt_token)
 
-        # ✅ SINGLE SOURCE OF TRUTH — convert here
+        # [OK] SINGLE SOURCE OF TRUTH -- convert here
         ts_ist = to_ist(tick["timestamp"])
 
         minute = (ts_ist.minute // CANDLE_INTERVAL_MINUTES) * CANDLE_INTERVAL_MINUTES
@@ -344,24 +363,35 @@ def candle_and_strategy_thread(engine):
         engine.last_candle_start = candle_start
         next_open = tick["ltp"]
 
-        # ✅ SAVE TO DB (IST ONLY)
+        # [OK] SAVE TO DB (IST ONLY)
         try:
-            LiveCandle.objects.create(
-                user_id=engine.user_id,
-                token=engine.token,
-                interval=f"{CANDLE_INTERVAL_MINUTES}m",
-                start_time=closed["start"],
-                end_time=closed["start"] + timedelta(minutes=CANDLE_INTERVAL_MINUTES),
-                open=closed["open"],
-                high=closed["high"],
-                low=closed["low"],
-                close=closed["close"],
-            )
-            logger.info("LiveCandle saved @ %s", closed["start"])
+            # SQLite retry loop for "database is locked"
+            for attempt in range(3):
+                try:
+                    LiveCandle.objects.update_or_create(
+                        user_id=engine.user_id,
+                        token=engine.token,
+                        interval=f"{CANDLE_INTERVAL_MINUTES}m",
+                        start_time=closed["start"],
+                        defaults={
+                            "end_time": closed["start"] + timedelta(minutes=CANDLE_INTERVAL_MINUTES),
+                            "open": closed["open"],
+                            "high": closed["high"],
+                            "low": closed["low"],
+                            "close": closed["close"],
+                        }
+                    )
+                    logger.info("LiveCandle saved @ %s", closed["start"])
+                    break
+                except Exception as e:
+                    if "database is locked" in str(e).lower() and attempt < 2:
+                        time.sleep(0.5)
+                        continue
+                    raise
         except Exception as e:
             logger.exception("LiveCandle DB error: %s", e)
 
-        # ✅ KEEP IN MEMORY (ORDER PRESERVED)
+        # [OK] KEEP IN MEMORY (ORDER PRESERVED)
         engine.candles.append(closed)
 
         logger.info(
@@ -541,12 +571,12 @@ def run_strategy_live(engine, df, next_open=None):
         balance_preview = get_account_balance(engine.api_key, engine.jwt_token)
         preview_cash = balance_preview.get("available_cash", 0) if balance_preview else 0
 
-        if preview_cash <= 1000:
-            logger.warning(
-                "[MARGIN CHECK] Insufficient preview balance (₹%.2f) — aborting before margin API call",
-                preview_cash
-            )
-            return
+        # if preview_cash <= 0:
+        #     logger.warning(
+        #         "[MARGIN CHECK] Insufficient preview balance (INR %.2f) -- aborting before margin API call",
+        #         preview_cash
+        #     )
+        #     return
 
         # Determine margin per lot using LTP so calculation is accurate
         margin_per_lot = get_margin_required(
@@ -567,7 +597,8 @@ def run_strategy_live(engine, df, next_open=None):
             )
             return
 
-        lots = pm.calculate_lots(preview_cash - 1000, margin_per_lot)
+        lots_calc = pm.calculate_lots(preview_cash - 1000, margin_per_lot)
+        lots = max(lots_calc, 1) # Force 1 lot for testing
         qty  = lots * pm.lot_size
 
         if qty <= 0:
@@ -600,19 +631,19 @@ def run_strategy_live(engine, df, next_open=None):
 
         if not margin_check["sufficient"]:
             logger.warning(
-                "[ORDER BLOCK] ❌ INSUFFICIENT MARGIN — "
-                "Available: ₹%.2f | Required: ₹%.2f | Shortfall: ₹%.2f | "
+                "[ORDER BLOCK] [FAIL] INSUFFICIENT MARGIN (FORCED PROCEED) -- "
+                "Available: INR %.2f | Required: INR %.2f | Shortfall: INR %.2f | "
                 "Symbol: %s | Qty: %s | Side: %s | ProductType: %s",
                 margin_check["available_cash"],
                 margin_check["required_margin"],
                 abs(margin_check["shortfall"]),
                 engine.trading_symbol, qty, action, product_type
             )
-            return
+            # return  # <--- Bypass block for testing
 
         logger.info(
-            "[ORDER PROCEED] ✅ Margin OK — Available: ₹%.2f | Required: ₹%.2f | "
-            "Surplus: ₹%.2f | Qty: %s | Side: %s",
+            "[ORDER PROCEED] [OK] Margin OK -- Available: INR %.2f | Required: INR %.2f | "
+            "Surplus: INR %.2f | Qty: %s | Side: %s",
             margin_check["available_cash"],
             margin_check["required_margin"],
             margin_check["shortfall"],

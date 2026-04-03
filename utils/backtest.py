@@ -433,7 +433,7 @@ def balance_chart_base64(events_df, text_on_empty="No data available"):
     
     ax.set_title("Available Balance Over Time")
     ax.set_xlabel("Time")
-    ax.set_ylabel("Available (₹)")
+    ax.set_ylabel("Available (INR)")
     fig.autofmt_xdate()
     return save_figure_to_base64(fig)
 

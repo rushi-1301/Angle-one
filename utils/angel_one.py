@@ -97,8 +97,8 @@ def refresh(key):
             logger.error("SMARTAPI LOGIN returned None — credentials may be invalid or TOTP expired")
             return key
 
-        if "data" not in session:
-            logger.error(f"SMARTAPI LOGIN FAILED: {session}")
+        if "data" not in session or not session.get("data"):
+            logger.error(f"SMARTAPI LOGIN FAILED (No data returned, invalid credentials?): {session}")
             return key  # DO NOT BREAK SYSTEM
 
         # Get fresh JWT + Refresh token
@@ -129,17 +129,17 @@ def refresh_jwt(key):
     try:
         smart = SmartConnect(api_key=key.api_key)
 
-        # CORRECT CALL — must pass dict, not keyword arg
-        data = smart.renewAccessToken({
-            "refreshToken": key.refresh_token
-        })
+        # In smartapi-python 1.4.0, renewAccessToken() takes no args and uses internal state.
+        # Calling generateToken(refresh_token) is more direct when we have a specific token.
+        data = smart.generateToken(key.refresh_token)
 
-        if data and "data" in data:
+        if data and data.get("status"):
             new_data = data["data"]
 
             key.jwt_token = new_data.get("jwtToken", key.jwt_token)
             key.refresh_token = new_data.get("refreshToken", key.refresh_token)
             key.feed_token = new_data.get("feedToken", key.feed_token)
+            key.updated_at = timezone.now()
             key.save()
 
             return True, key
@@ -343,6 +343,8 @@ def get_smartapi_client(api_key, client_id, client_secret, totp=None):
     smart = SmartConnect(api_key=api_key)
 
     data = smart.generateSession(client_id, client_secret, totp)
+    if not data or not data.get('data'):
+        raise Exception(f"Failed to generate session: {data}")
     jwt_token = data['data']['jwtToken']
 
     return smart, jwt_token
@@ -445,6 +447,12 @@ def login_and_get_tokens(angel_key, max_attempts=4, delay=15):
                 totp
             )
 
+            if not session or not session.get("data"):
+                logger.warning("Login attempt %d/%d failed with session: %s", attempt, max_attempts, session)
+                if attempt < max_attempts:
+                    time.sleep(delay)
+                continue
+
             jwt = session["data"]["jwtToken"]
             feed_token = obj.getfeedToken()
 
@@ -501,7 +509,7 @@ def get_margin_required(
 
     Returns
     -------
-    float — Total margin required (in ₹). Returns 0 on any failure.
+    float -- Total margin required (in INR). Returns 0 on any failure.
     """
     # Normalize product type
     normalised_product = _PRODUCT_TYPE_MAP.get(
@@ -554,7 +562,7 @@ def get_margin_required(
             else:
                 required = 0.0
 
-            logger.info("[MARGIN API] Required margin = ₹%.2f", required)
+            logger.info("[MARGIN API] Required margin = INR %.2f", required)
             return required
 
         logger.error("[MARGIN API] Failed response: %s", data)
@@ -612,7 +620,7 @@ def fetch_margin_and_balance(
         result["net_balance"]    = balance.get("net_balance", 0.0)
 
         logger.info(
-            "[MARGIN CHECK] Available cash = ₹%.2f | Used margin = ₹%.2f",
+            "[MARGIN CHECK] Available cash = INR %.2f | Used margin = INR %.2f",
             result["available_cash"], result["used_margin"]
         )
     except Exception as e:
@@ -637,7 +645,7 @@ def fetch_margin_and_balance(
         result["required_margin"] = required
 
         logger.info(
-            "[MARGIN CHECK] Required margin = ₹%.2f", required
+            "[MARGIN CHECK] Required margin = INR %.2f", required
         )
     except Exception as e:
         result["error"] = f"Margin API error: {e}"
@@ -651,12 +659,12 @@ def fetch_margin_and_balance(
 
     if result["sufficient"]:
         logger.info(
-            "[MARGIN CHECK] ✅ SUFFICIENT | Available ₹%.2f ≥ Required ₹%.2f (surplus ₹%.2f)",
+            "[MARGIN CHECK] [OK] SUFFICIENT | Available INR %.2f >= Required INR %.2f (surplus INR %.2f)",
             result["available_cash"], result["required_margin"], shortfall
         )
     else:
         logger.warning(
-            "[MARGIN CHECK] ❌ INSUFFICIENT | Available ₹%.2f < Required ₹%.2f (shortfall ₹%.2f) — ORDER BLOCKED",
+            "[MARGIN CHECK] [FAIL] INSUFFICIENT | Available INR %.2f < Required INR %.2f (shortfall INR %.2f) -- ORDER BLOCKED",
             result["available_cash"], result["required_margin"], abs(shortfall)
         )
 
